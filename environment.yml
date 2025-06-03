@@ -1,0 +1,17 @@
+name: py_coreg_v1
+
+channels:
+  - conda-forge
+
+dependencies:
+  - mamba
+  - xdem
+  - numpy
+  - pandas
+  - matplotlib
+  - rasterio
+  - rioxarray
+  - gdal
+  - geojson
+  - opencv
+  - pytransform3d
