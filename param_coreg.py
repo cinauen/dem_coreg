@@ -1,5 +1,8 @@
 
 import os
+from joblib import cpu_count
+
+
 
 class LiBP_coreg:
     def __init__(self, PATH):
@@ -9,7 +12,7 @@ class LiBP_coreg:
             PATH.PATH_BASE, 'Fieldwork', 'Alaska_processing',
             '2_proc', 'LiBP', 'BAP24-S', 'coreg_test')
 
-        # -- project name (ise used for file prefix e.g. for logging file)
+        # -- project name (is used for file prefix e.g. for logging file)
         self.PROJ_NAME = 'LiBP_coreg'
 
         # ======= define input imagery ========
@@ -41,4 +44,165 @@ class LiBP_coreg:
 
         self.EPSG_INP = 32603
         self.EPSG_TARGET = 32603
+
+
+class UAV_coreg:
+    def __init__(self, PATH_BASE):
+        # ============ DEFINE INPUT ==================
+        # === define project parameters =====
+        self.PATH_IO = os.path.join(
+            PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+
+        # -- project name (ise used for file prefix e.g. for logging file)
+        self.PROJ_NAME = 'UAV_coreg'
+
+        # ======= define input imagery ========
+        # ---------- target imagery ----------
+        # paths to target files
+        self.TARGET_PATH = os.path.join(
+            PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+        # target files
+        self.TARGET_FNAME = {
+            'RGB': ['BAP23B_v02_EW_transparent_mosaic_group1.tif'],
+            'DSM': ['BAP23B_v02_EW_dsm.tif']}
+
+        # nodata value of target imagery
+        self.TARGET_NODATA_INP = {'RGB': 0, 'DSM': -1000}
+
+        # --------- reference imagery ---------
+        # path to refernece imagery
+        self.REF_PATH = os.path.join(
+            PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+        # reference imagery
+        self.REF_FNAME = {
+            'RGB': ['BAP22B_v03_EW_transparent_mosaic_group1.tif'],
+            'DSM': ['BAP22B_v03_EW_dsm.tif']}
+
+        self.REF_NODATA_INP = {'RGB': 0, 'DSM': -1000}
+
+        # --- AOI area which should be used for processing
+        # (file must be saved in target paths)
+        self.PROCESSING_AOI = 'AOI_coreg.geojson'
+
+        self.RESOLUTION_OUT = 0.05
+
+        self.EPSG_INP = 32603
+        self.EPSG_OUT = 32603
+
+
+        self.COREG_CPU_NUM = int(cpu_count()-10)
+
+        self.COREG_GLOBAL_MAX_SHIFT = 50  # given in pixel
+        # default value is 5
+        self.COREG_GLOBAL_WINDOW_SIZE = 256  # matching window size
+        # in pixels default is (256, 256)
+
+        self.COREG_LOCAL = True
+        self.GRID_RES_PIX_LOCAL = 200  # !!!! this needs to be adjusted according
+        # to the image resolution/size if too small get Memory error
+        self.COREG_LOCAL_MAX_SHIFT = 50  # given in pixel
+        # default value is 5
+        self.COREG_LOCAL_WINDOW_SIZE = 512  # matching window size
+        # in pixels default is (256, 256)
+
+        # needs to be given as string because is evaluated according to
+        # AOI poly !!!!! needs to be fully in image area !!!
+        self.add_coreg_param_dict = None
+        # "{'footprint_poly_ref': AOI_poly, 'footprint_poly_tgt':  AOI_poly, 'max_iter': 10}"
+
+        self.SAVE_AS_COG = True  # is only applied is coreg files
+        # (thus only aplied to final output)
+
+        self.RESAMPLING_TYPE = 'cubic'  # 'linear', 'nearest' 'bilinear'
+
+
+class UAV_coreg_steps:
+    def __init__(self, PATH_BASE, proc_step):
+        # ============ DEFINE INPUT ==================
+        # === define project parameters =====
+        self.PATH_IO = os.path.join(
+            PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+
+        # -- project name (ise used for file prefix e.g. for logging file)
+        self.PROJ_NAME = 'UAV_coreg'
+
+        # ======= define input imagery ========
+        # ---------- target imagery ----------
+        # paths to target files
+        self.TARGET_PATH = os.path.join(
+            PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+        # target files
+        self.TARGET_FNAME = {
+            'RGB': ['BAP23B_v02_EW_transparent_mosaic_group1.tif'],
+            'DSM': ['BAP23B_v02_EW_dsm.tif']}
+
+        # nodata value of target imagery
+        self.TARGET_NODATA_INP = {'RGB': 0, 'DSM': -1000}
+
+        # --------- reference imagery ---------
+        # path to refernece imagery
+        self.REF_PATH = os.path.join(
+            PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+        # reference imagery
+        self.REF_FNAME = {
+            'RGB': ['BAP22B_v03_EW_transparent_mosaic_group1.tif'],
+            'DSM': ['BAP22B_v03_EW_dsm.tif']}
+
+        self.REF_NODATA_INP = {'RGB': 0, 'DSM': -1000}
+
+        # --- AOI area which should be used for processing
+        # (file must be saved in target paths)
+        self.PROCESSING_AOI = 'AOI_coreg.geojson'
+
+        self.RESOLUTION_OUT = 0.05
+
+        self.EPSG_INP = 32603
+        self.EPSG_OUT = 32603
+
+        self.RESAMPLING_TYPE = 'cubic'  # 'linear', 'nearest' 'bilinear'
+
+
+        if proc_step == 2:
+
+            self.mask_file = os.path.join(
+                self.PATH_IO, 'arosics_coregmask.tif')
+            self.preproc_files_df = os.path.join(
+                self.PATH_IO, f'{self.PROJ_NAME}_preproc_files.txt')
+
+            self.COREG_CPU_NUM = 30  # int(cpu_count()-10)
+
+            self.COREG_GLOBAL_MAX_SHIFT = 50  # given in pixel
+            # default value is 5
+            self.COREG_GLOBAL_WINDOW_SIZE = 256  # matching window size
+            # in pixels default is (256, 256)
+
+            self.COREG_LOCAL = True
+            self.GRID_RES_PIX_LOCAL = 25  # !!!! this needs to be adjusted according
+            # to the image resolution/size if too small get Memory error
+            self.COREG_LOCAL_MAX_SHIFT = 50  # given in pixel
+            # default value is 5
+            self.COREG_LOCAL_WINDOW_SIZE = 512  # matching window size
+            # in pixels default is (256, 256)
+
+            # needs to be given as string because is evaluated according to
+            # AOI poly !!!!! needs to be fully in image area !!!
+            self.add_coreg_param_dict = None
+            # "{'footprint_poly_ref': AOI_poly, 'footprint_poly_tgt':  AOI_poly, 'max_iter': 10}"
+
+            self.SAVE_AS_COG = True  # is only applied is coreg files
+            # (thus only aplied to final output)
+
+        if proc_step == 3:
+            self.mask_file = os.path.join(
+                self.PATH_IO, 'arosics_coregmask.tif')
+            self.preproc_files_df = os.path.join(
+                self.PATH_IO,
+                f'{self.PROJ_NAME}_arosics_coreg_files.txt')
+
 

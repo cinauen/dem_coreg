@@ -8,15 +8,20 @@ import datetime as dt
 import numpy as np
 import rioxarray
 import shapely.geometry as shap_geom
+import rasterio
 from rasterio.enums import Resampling
+from rioxarray.merge import merge_arrays
 import osgeo
 from osgeo import osr
 from osgeo import ogr
-
 import geojson
 
+import cProfile
+import pstats
 
-def img_read(FILE_P, FILE_N, NODATA, EPSG_INP):
+
+
+def img_read(FILE_P, NODATA, EPSG_INP):
     """
     Read a raster image using rioxarray.
 
@@ -39,7 +44,7 @@ def img_read(FILE_P, FILE_N, NODATA, EPSG_INP):
     """
 
     img = rioxarray.open_rasterio(
-        os.path.join(FILE_P, FILE_N), masked=False)  # , chunks='auto')
+        FILE_P, masked=False, chunks='auto')
 
     if NODATA is not None:
         # set nodata value to if specified
@@ -52,6 +57,7 @@ def img_read(FILE_P, FILE_N, NODATA, EPSG_INP):
         img = img.rio.write_crs(EPSG_INP)
 
     return img
+
 
 def img_preproc(img, res_out, AOI_coords, EPSG_TARGET, NODATA,
                 resampling_type='bilinear'):
@@ -92,6 +98,160 @@ def img_preproc(img, res_out, AOI_coords, EPSG_TARGET, NODATA,
     img = pad_img_to_bounds(img, AOI_coords)
 
     return img
+
+
+def img_read_preproc(file_path, img_key, NODATA, res_out, AOI_coords, EPSG_INP,
+                     EPSG_TARGET, resampling_type='bilinear'):
+    """
+    Preprocesses an image by adjusting its resolution, clipping it to
+    an Area of Interest (AOI), and padding it to match the AOI bounds.
+
+    Parameters:
+    img (raster image, rioxarray):
+        The input image to be preprocessed.
+    res_out (float):
+        The desired output resolution.
+    AOI_coords (list):
+        The coordinates defining the Area of Interest.
+        Derived from AOI with read_transl_geojson_AOI_coords_single()
+    EPSG_TARGET (int):
+        The target EPSG code for reprojection. E.g. 32603
+    NODATA (int):
+        The value to use for nodata pixels.
+    resampling_type (str, optional):
+        The resampling type to use. Defaults to 'bilinear'.
+        other options cubic nearest etc.)
+
+    Returns:
+    raster image: The preprocessed image.
+    """
+    # read file
+    img = img_read(file_path, NODATA, EPSG_INP)
+
+    # adjust resolution and EPSG
+    if img.rio.resolution()[0] != res_out:
+        img = img.rio.reproject(
+                "EPSG:" + str(EPSG_TARGET), nodata=NODATA,
+                resampling=Resampling[resampling_type], resolution=res_out)
+
+    # clip to AOi
+    img = clip_to_aoi(
+        img, AOI_coords, EPSG_TARGET,
+        from_disk=False, drop_na=True)
+
+    # for xdem images need to have same shape therefore pad to box
+    img = pad_img_to_bounds(img, AOI_coords)
+
+    return img, img_key
+
+
+def reproject_match(img, ref_img, img_key, resampling_type):
+    out = img.rio.reproject_match(
+            ref_img,
+            Resampling=Resampling[resampling_type])
+    return out , img_key
+
+
+def merge_save(img_lst, img_key, path_out, file_prefix):
+    ''''''
+    # ------- merge images
+    img_merged = merge_arrays(img_lst, method='first')
+
+    # ------- saved preprocessed image to file
+    fpath_out = os.path.join(
+        path_out, f"{file_prefix}_{img_key}_preproc.tif")
+    img_merged.rio.to_raster(
+        raster_path=fpath_out, write_nodata=True)
+
+    return img_merged, img_key, fpath_out
+
+
+def get_inp_lst_parallel_proc(ref_path, ref_fname, ref_nodata,
+                target_path, target_fname, target_nodata):
+    fp_lst = []
+    file_n_lst = []
+    img_key = []
+    img_type = []
+    nodata_inp = []
+    for i_key, i_fname_lst in ref_fname.items():
+        for e, i in enumerate(i_fname_lst):
+            fp_lst.append(os.path.join(ref_path, i))
+            file_n_lst.append(i)
+            img_key.append(f"REF_{i_key}_{e}")
+            img_type.append(f"REF_{i_key}")
+            nodata_inp.append(ref_nodata[i_key])
+
+    for i_key, i_fname_lst in target_fname.items():
+        for e, i in enumerate(i_fname_lst):
+            fp_lst.append(os.path.join(target_path, i))
+            file_n_lst.append(i)
+            img_key.append(f"TAR_{i_key}_{e}")
+            img_type.append(f"TAR_{i_key}")
+            nodata_inp.append(target_nodata[i_key])
+    return fp_lst, file_n_lst, img_key, img_type, nodata_inp
+
+
+# def merge_reproj_save(ref_lst, target_lst, path_out, ref_name_prefix,
+#                       target_name_prefix):
+#     # ------- merge images
+
+
+
+#     ref_merged = {}
+#     for i_key, i_img in ref.items():
+#         ref_merged[i_key] = merge_arrays(i_img, method='first')
+
+#     target_merged = {}
+#     for i_key, i_img in target.items():
+#         target_merged[i_key] = merge_arrays(i_img, method='first')
+
+#     # ---- make sure that the target and the reference image have exactly the
+#     # coordinate system by projectoing the target to the same coords as the
+#     # reference image
+#     for i_key, i_img in target_merged.items():
+#         target_merged[i_key] = target_merged[i_key].rio.reproject_match(
+#             ref_merged[i_key], Resampling=Resampling.bilinear)
+
+#     # ------- saved preprocessed image to file
+#     fpath_ref_out = {}
+#     for i_key, i_img in ref_merged.items():
+#         fpath_ref_out[i_key] = os.path.join(
+#             path_out, f"{ref_name_prefix.split('.')[0]}_{i_key}_preproc.tif")
+#         ref_merged[i_key].rio.to_raster(
+#             raster_path=fpath_ref_out[i_key], write_nodata=True)
+
+#     fpath_target_out = {}
+#     for i_key, i_img in target_merged.items():
+#         fpath_target_out[i_key] = os.path.join(
+#             path_out, f"{target_name_prefix.split('.')[0]}_{i_key}_preproc.tif")
+#         target_merged[i_key].rio.to_raster(
+#             raster_path=fpath_target_out[i_key], write_nodata=True)
+
+#     # ----- create a mask
+#     # (mask is True where have valid data, is False where eiter the data
+#     # on the reference or the target image is missing)
+
+#     # mask_inv is for asorics
+#     count = 0
+#     for i_key, i_img in ref_merged.items():
+#         if count == 0:
+#             mask = i_img.where(np.isnan(i_img), False, True)
+#             mask_inv = i_img.where(np.isnan(i_img), 1, 0)
+#         else:
+#             mask = np.where(np.isnan(mask) | np.isnan(i_img.values), False, True)
+#             mask_inv = np.where(np.isnan(mask) | np.isnan(i_img.values), 1, 0)
+#         count += 1
+
+#     for i_key, i_img in target_merged.items():
+#         # mask is already existing
+#         mask = np.where(np.isnan(mask) | np.isnan(i_img.values), False, True)
+#         mask_inv = np.where(np.isnan(mask) | np.isnan(i_img.values), 1, 0)
+
+#     mask_inv_save_path = os.path.join(path_out, 'arosics_coregmask.tif')
+#     mask_inv.rio.to_raster(mask_inv_save_path)
+
+#     return fpath_ref_out, fpath_target_out, mask_inv_save_path
+
 
 def get_bounds_lbrt(coords):
     '''
@@ -146,6 +306,7 @@ def read_transl_geojson_AOI_coords_single(file_name, target_crs=None):
     poly = shap_geom.Polygon(coords_out)
 
     return coords_out, poly
+
 
 def coord_transformation(coord_array, in_syst=4326, out_syst=3857):
     '''
@@ -360,7 +521,6 @@ def clip_to_aoi(rds, AOI_COORDS, AOI_EPSG=None, from_disk=True,
     return clipped
 
 
-
 def init_logging(
         log_file=None, append=True,
         console_loglevel=logging.DEBUG,
@@ -415,4 +575,158 @@ def init_logging(
         logging_step_str, dt.datetime.now().strftime('%Y-%m-%d_%H:%M')))
 
     return
+
+
+def setup_time_control():
+    """
+    Set up time control for profiling.
+
+    Returns:
+        cProfile.Profile: A Profiler object that can be used to measure
+        execution time.
+    """
+    prof = cProfile.Profile()
+    prof.disable()  # disable profiling if don't want to record time...
+    prof.enable()  # profiling back on
+    return prof
+
+
+def save_time_stats(prof, PATH_OUT, FILE_PREFIX):
+    """
+    Save time statistics for the given profiler.
+
+    Args:
+        prof (cProfile.Profile): The profiler object that was initialized at the beginning of the script.
+        PATH_OUT (str): The output directory where the statistics will be saved.
+        FILE_PREFIX (str): The prefix for the output files.
+
+    Returns:
+        None
+    """
+    # save time measure
+    path_stats = os.path.normpath(
+        os.path.join(PATH_OUT, f'{FILE_PREFIX}_time_stats.stats'))
+    path_stats_txt = os.path.normpath(
+        os.path.join(PATH_OUT, f'{FILE_PREFIX}_time_stats.txt'))
+
+    prof.disable()  # don't profile the generation of stats
+    prof.dump_stats(path_stats)
+
+    with open(path_stats_txt, 'wt') as output:
+        stats = pstats.Stats(path_stats, stream=output)
+        stats.sort_stats('cumulative', 'time')
+        stats.print_stats()
+
+    return
+
+
+def create_param_class_instance(module_name: str, class_name: str,
+                    base_path, proc_step):
+    '''
+    dynamic class instance creation
+
+    use e.g. as
+    PARAM = create_instance(
+        "param_coreg", "UAV_coreg_steps", PATH.PATH_BASE, 1)
+
+    '''
+    module = __import__(module_name)
+    class_ = getattr(module, class_name)
+    return class_(base_path, proc_step)
+
+
+def check_for_missing_fill_val(img):
+    if (img.rio.nodata is None
+        and not np.any(np.isnan(img.data))):
+        img.rio.set_nodata(0, inplace=True)
+
+    elif img.rio.nodata is None:
+        if np.any(np.isnan(img.data)):
+            img.rio.set_nodata(np.nan, inplace=True)
+        else:
+            sys.exit(
+                '!!! therem might be an error reading in data. \n'
+                + 'nodata is not specified and nans are present in data')
+    return img
+
+
+def resave_tif_to_cog(file_path, resave_rio=True):
+    '''
+    use resave_rio if want to resave the raster after coregistration
+    such that all attributes are in the file (by default arosics
+    adds this info in a header file, however if only the tif is later
+    copied to another locatio it can't be read with rioxarray due to
+    missing header.
+
+    !!! Note: with this method the nodata value is not written to file
+    even if specified (thus maybe better use tif_to_cog_rasterio())
+    '''
+
+    if resave_rio:
+        img = rioxarray.open_rasterio(
+            file_path, masked=False, chunks='auto')  # masked=True
+        img = check_for_missing_fill_val(img)
+
+        img.rio.to_raster(raster_path=file_path, write_nodata=True,
+                          driver="GTiff")
+
+        img.close()
+
+    tif_to_cog_rasterio(file_path)
+
+    return
+
+
+def tif_to_cog_rasterio(file_path, out_path=None):
+    '''Save tif to cog via rasterio'''
+    # Open the source GeoTIFF
+    with rasterio.open(file_path, 'r') as src:
+        # Define COG creation options
+        cog_profile = src.profile.copy()
+
+        blocksize = 256
+        padded_data, pad_width, pad_height = pad_raster_to_multiple(
+            src, blocksize)
+        nodata_val = src.nodata
+        cog_profile.update({
+            'driver': 'GTiff',
+            'BIGTIFF': "YES",
+            'compress': 'DEFLATE',
+            'blockxsize': blocksize,  # Tile size
+            'blockysize': blocksize,  # Tile size
+            'tiled': True,
+            'width': src.width + pad_width,
+            'height': src.height + pad_height,
+            'nodata': nodata_val
+            })
+
+        if out_path is None:
+            out_path = file_path.split('.')[0] + '_cog.tif'
+        # Write the COG file
+        with rasterio.open(out_path, 'w', **cog_profile) as dst:
+            for i in range(1, src.count + 1):
+                dst.write(padded_data[i-1], i)
+            dst.descriptions = src.descriptions
+            dst.update_tags(**src.tags().copy())
+    return
+
+
+def pad_raster_to_multiple(src, blocksize):
+    width, height = src.width, src.height
+    pad_width = (blocksize - width % blocksize) % blocksize
+    pad_height = (blocksize - height % blocksize) % blocksize
+
+    # Pad the raster data
+    padded_data = []
+    for i in range(1, src.count + 1):
+        band = src.read(i)
+        padded_band = np.pad(
+            band,
+            ((0, pad_height), (0, pad_width)),
+            mode='constant',
+            constant_values=src.nodata
+        )
+        padded_data.append(padded_band)
+
+    return padded_data, pad_width, pad_height
 
