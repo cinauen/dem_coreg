@@ -22,7 +22,8 @@ import matplotlib.pyplot as plt
 import cProfile
 import pstats
 
-
+from dask import delayed
+from dask import compute
 
 
 def img_read(FILE_P, NODATA, EPSG_INP, chunks='auto'):
@@ -103,7 +104,7 @@ def img_preproc(img, res_out, AOI_coords, EPSG_TARGET, NODATA,
 
     return img
 
-
+@delayed
 def img_read_preproc(file_path, img_key, NODATA, res_out, AOI_coords, EPSG_INP,
                      EPSG_TARGET, band_names=None, bands_keep=None,
                      resampling_type='bilinear', from_disk=True):
@@ -160,14 +161,14 @@ def img_read_preproc(file_path, img_key, NODATA, res_out, AOI_coords, EPSG_INP,
 
     return img, img_key
 
-
+@delayed
 def reproject_match(img, ref_img, img_key, resampling_type):
     out = img.rio.reproject_match(
             ref_img,
             Resampling=Resampling[resampling_type])
     return out , img_key
 
-
+@delayed
 def merge_save(img_lst, img_key, path_out, file_prefix, save=False):
     ''''''
     # ------- merge images
@@ -187,7 +188,7 @@ def merge_save(img_lst, img_key, path_out, file_prefix, save=False):
 
     return img_merged, img_key, fpath_out
 
-
+@delayed
 def img_save(img, file_p):
     ''''''
     # ------- saved preprocessed image to file
@@ -765,40 +766,49 @@ def pad_raster_to_multiple(src, blocksize):
 
     return padded_data, pad_width, pad_height
 
-
-def filter_outliers(img, window_size=6, std_fact=3,
-                    create_plot=False, fp_fig=None):
+@delayed
+def filter_outliers(img, img_key, window_size=600, std_fact=5,
+                    create_plot=False, fp_fig=None, min_filt=None,
+                    max_filt=None):
 
     # use median filter to create a smoothed image and pad nan values
     # at edges (use here mean as median is much slower)
     #rolled = img.rolling(dict(y=window_size, x=window_size), center=True
     #                       ).construct('window_y', 'window_x')
     #smoothed = rolled.mean(dim=('window_y', 'window_x'))
+    img_cleaned = img.copy()
+    if min_filt is not None:
+        img_cleaned = img_cleaned.where(img > min_filt)
 
+    if max_filt is not None:
+        img_cleaned = img_cleaned.where(img < max_filt)
 
-    # for faster computation with dask use construct creates a new dimension
-    smoothed = img.rolling(
-        y=window_size, x=window_size, center=True).mean()
-    smoothed = smoothed.bfill(dim="x").bfill(dim="y").ffill(dim="x").ffill(dim="y")
-    smoothed = smoothed.where(~np.isnan(img))
+    if window_size is not None:
+        # for faster computation with dask use construct creates a new dimension
+        smoothed = img_cleaned.rolling(
+            y=window_size, x=window_size, center=True).mean()
+        smoothed = smoothed.bfill(dim="x").bfill(dim="y").ffill(dim="x").ffill(dim="y")
+        smoothed = smoothed.where(~np.isnan(img_cleaned))
 
-    # get diff from orig'
-    img_diff = np.abs(img - smoothed)
+        # get diff from orig'
+        img_diff = np.abs(img_cleaned - smoothed)
 
-    # get threshold for filtering
-    threshold = img_diff.mean() + std_fact * img_diff.std()
+        # get threshold for filtering
+        threshold = img_diff.mean() + std_fact * img_diff.std()
 
-    # remove values outside threshold
-    img_cleaned = img.where(img_diff <= threshold)
+        # remove values outside threshold
+        img_cleaned = img_cleaned.where(img_diff <= threshold)
 
-    img_cleaned_interp = fill_gaps(img_cleaned, max_gap=10)
-
+    # -- interpolating the gaps (!!! is very slow !!!)
+    #img_cleaned_interp = fill_gaps(img_cleaned, max_gap=10)
     if create_plot:
         create_comparison_plot(
-            [img, img_cleaned, img_cleaned_interp], fp_fig=fp_fig,
-            cbar_title="Elevation change (m)")
+            [img, img_cleaned], ['unfiltered', 'filtered'],
+            fp_fig=fp_fig,
+            #cbar_title="Elevation change (m)"
+            )
 
-    return img_cleaned_interp
+    return img_cleaned, img_key
 
 
 def fill_gaps(img, max_gap=10):
@@ -828,8 +838,8 @@ def fill_gaps(img, max_gap=10):
     return img_interp2d
 
 
-def create_comparison_plot(img_lst, fp_fig=None,
-                           cbar_title="Elevation change (m)"):
+def create_comparison_plot(img_lst, title_lst, fp_fig=None,
+                           band_plot='elev', fig_type='png'):
 
     n_subp = len(img_lst)
     fig, ax = plt.subplots(
@@ -837,14 +847,16 @@ def create_comparison_plot(img_lst, fp_fig=None,
 
     for i in range(n_subp):
 
-        img_lst[i].plot(
+        img_lst[i].sel(band=band_plot).plot.imshow('x', 'y',
             cmap="RdYlBu", vmin=img_lst[i].min().values*1.02,
             vmax=img_lst[i].max().values*0.98,
-            cbar_title=cbar_title, ax=ax[i])
-        ax[i].set_title('unfiltered')
+            #cbar_title=cbar_title,
+            ax=ax[i])
+        ax[i].set_title(title_lst[i])
 
     if fp_fig is not None:
-        fig.savefig(fp_fig, format='pdf')
+        fig.savefig(f"{fp_fig.split('.')[0]}.{fig_type}",
+                    format=fig_type)
 
     return
 
