@@ -11,8 +11,8 @@ class get_proc_paths:
         if system == 'linux':
             # for linux
             self.PATH_BASE = os.path.normpath(
-                r'/isipd/projects/Response/GIS_RS_projects/USER/')
+                r'/XXX/USER/')
         elif system == 'windows':
             # for windows
             self.PATH_BASE = os.path.normpath(
-                r'//smb.isipd.dmawi.de/projects/Response/GIS_RS_projects/USER/')
+                r'//XXX/USER/')
