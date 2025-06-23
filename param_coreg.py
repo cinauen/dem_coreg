@@ -161,6 +161,14 @@ class UAV_coreg_steps:
         self.bands_keep = {'RGB': ['red', 'green', 'blue'],
                            'DSM': ['elev']}
 
+        # merge RGB and DEM into one for preprocessing arosics coreg
+        self.merge_bands = {'REF_BAP22B': ['REF_RGB', 'REF_DSM'],
+                            'TAR_BAP23B': ['TAR_RGB', 'TAR_DSM']
+                            }
+        self.coreg_ref = 'REF_BAP22B'
+        self.coreg_target = ['TAR_BAP23B']  # if list then first is used to get
+        # coregistration, whic is the applied to all the other images
+
         # --- AOI area which should be used for processing
         # (file must be saved in target paths)
         self.PROCESSING_AOI = 'AOI_coreg.geojson'
@@ -170,13 +178,21 @@ class UAV_coreg_steps:
         self.EPSG_INP = 32603
         self.EPSG_OUT = 32603
 
+        self.dask_chunks = {'band': 4, 'x': 5120, 'y': 5120}
+
         self.RESAMPLING_TYPE = 'cubic'  # 'linear', 'nearest' 'bilinear'
 
-        # merge RGB and DEM into one for preprocessing arosics coreg
-        self.merge_bands = {'REF_BAP22B': ['REF_RGB', 'REF_DSM'],
-                            'TAR_BAP23B': ['TAR_RGB', 'TAR_DSM']
-                            }
 
+
+        # filter file
+        self.filter_img_key = 'DSM'
+        # --- remove below or above min max
+        self.filter_min = None
+        self.filter_max = 100  # if None then nothing is done
+        # --- filter according to moving window stats
+        self.fitler_moving_window_outlier = False
+        self.filter_window_size_px = 600
+        self.filter_std_fact = 6
 
         if proc_step == 2:
 
@@ -217,53 +233,63 @@ class UAV_coreg_steps:
                 f'{self.PROJ_NAME}_arosics_coreg_files.txt')
 
 
-class UAV_coreg_steps_merged:
+
+class UAV_coreg_steps_no_merge:
     def __init__(self, PATH_BASE, proc_step):
         # ============ DEFINE INPUT ==================
         # === define project parameters =====
         self.PATH_IO = os.path.join(
-            PATH_BASE, 'Fieldwork', 'Alaska_processing',
-            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+            PATH_BASE, '1B_proc', '3_gully_sites',
+            'UAV_coreg_test')
+            #PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            #'2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
 
         # -- project name (ise used for file prefix e.g. for logging file)
-        self.PROJ_NAME = 'UAV_coreg'
+        self.PROJ_NAME = 'UAV_coreg_NO_merge'
 
         # ======= define input imagery ========
         # ---------- target imagery ----------
         # paths to target files
         self.TARGET_PATH = os.path.join(
-            PATH_BASE, 'Fieldwork', 'Alaska_processing',
-            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+            PATH_BASE, '1B_proc', '3_gully_sites',
+            'UAV_coreg_test')
+            #PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            #'2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
         # target files
         self.TARGET_FNAME = {
-            'RGB_DSM': [
-               {'RGB': os.path.join(
-                    self.TARGET_PATH,
-                    'BAP23B_v02_EW_transparent_mosaic_group1.tif'),
-                'DSM': os.path.join(
-                    self.TARGET_PATH,
-                    'BAP23B_v02_EW_dsm.tif')}]}
+            'RGB': ['BAP23B_v02_EW_transparent_mosaic_group1.tif'],
+            'DSM': ['BAP23B_v02_EW_dsm.tif']}
 
         # nodata value of target imagery
-        self.TARGET_NODATA_INP = {'RGB': 0, 'DSM': -1000}
+        self.TARGET_NODATA_INP = {'RGB': 0, 'DSM': -10000}
 
         # --------- reference imagery ---------
         # path to refernece imagery
         self.REF_PATH = os.path.join(
-            PATH_BASE, 'Fieldwork', 'Alaska_processing',
-            '2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
+            PATH_BASE, '1B_proc', '3_gully_sites',
+            'UAV_coreg_test')
+            #PATH_BASE, 'Fieldwork', 'Alaska_processing',
+            #'2_proc', 'UAV', 'pix4d_proc', 'coreg_test')
         # reference imagery
         self.REF_FNAME = {
-            'RGB_DSM': [
-               {'RGB': os.path.join(
-                    self.REF_PATH,
-                   'BAP22B_v03_EW_transparent_mosaic_group1.tif'),
-                'DSM': os.path.join(
-                    self.REF_PATH,
-                    'BAP22B_v03_EW_dsm.tif')}]}
+            'RGB': ['BAP23B_UAV_test_RGB.tif'],
+            'DSM': ['BAP23B_UAV_test_elev.tif']}
 
-        self.REF_NODATA_INP = {'RGB': 0, 'DSM': -1000}
-        self.band_names = {'RGB': ['R', 'G', 'B'], 'DSM': ['elev']}
+        self.REF_NODATA_INP = {'RGB': 0, 'DSM': 0}  # {'RGB': 0, 'DSM': -10000}
+        self.band_names = {'REF_RGB': ['red', 'green', 'blue'],
+                           'REF_DSM': ['elev'],
+                           'TAR_RGB': ['red', 'green', 'blue', 'alpha'],
+                           'TAR_DSM': ['elev']}
+        self.bands_keep = {'REF_RGB': ['red', 'green', 'blue'],
+                           'REF_DSM': ['elev'],
+                           'TAR_RGB': ['red', 'green', 'blue'],
+                           'TAR_DSM': ['elev']}
+
+        # merge RGB and DEM into one for preprocessing arosics coreg
+        self.merge_bands = None
+        self.coreg_ref = 'REF_RGB'
+        self.coreg_target = ['TAR_RGB', 'TAR_DSM']  # if list then first is used to get
+        # coregistration, whic is the applied to all the other images
 
         # --- AOI area which should be used for processing
         # (file must be saved in target paths)
@@ -274,10 +300,21 @@ class UAV_coreg_steps_merged:
         self.EPSG_INP = 32603
         self.EPSG_OUT = 32603
 
+        self.dask_chunks = {'band':3, 'x': 5120, 'y': 5120}
+
         self.RESAMPLING_TYPE = 'cubic'  # 'linear', 'nearest' 'bilinear'
 
-        # merge RGB and DEM into one for preprocessing arosics coreg
-        self.run_merged = True
+
+
+        # filter file
+        self.filter_img_key = 'DSM'
+        # --- remove below or above min max
+        self.filter_min = None
+        self.filter_max = 100  # if None then nothing is done
+        # --- filter according to moving window stats
+        self.fitler_moving_window_outlier = False
+        self.filter_window_size_px = 600
+        self.filter_std_fact = 6
 
         if proc_step == 2:
 
@@ -294,7 +331,7 @@ class UAV_coreg_steps_merged:
             # in pixels default is (256, 256)
 
             self.COREG_LOCAL = True
-            self.GRID_RES_PIX_LOCAL = 25  # !!!! this needs to be adjusted according
+            self.GRID_RES_PIX_LOCAL = 400  # !!!! this needs to be adjusted according
             # to the image resolution/size if too small get Memory error
             self.COREG_LOCAL_MAX_SHIFT = 50  # given in pixel
             # default value is 5
@@ -316,5 +353,3 @@ class UAV_coreg_steps_merged:
             self.preproc_files_df = os.path.join(
                 self.PATH_IO,
                 f'{self.PROJ_NAME}_arosics_coreg_files.txt')
-
-

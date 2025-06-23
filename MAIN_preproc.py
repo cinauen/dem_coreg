@@ -41,12 +41,12 @@ import utils_dem_coreg
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
-import control_file
+import control_file_templ
 
 
-def main(PARAM_CLASS="UAV_coreg_steps"):
+def main(PARAM_CLASS="UAV_coreg_steps_no_merge"):
 
-    PATH = control_file.get_proc_paths()
+    PATH = control_file_templ.get_proc_paths()
 
     # ------------ get param -----------
     PARAM = utils_dem_coreg.create_param_class_instance(
@@ -68,6 +68,11 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
         PARAM.PATH_IO, PARAM.PROCESSING_AOI)
     AOI_coords, AOI_poly = utils_dem_coreg.read_transl_geojson_AOI_coords_single(
         AOI_FILE, PARAM.EPSG_OUT)
+    # get new origin for image transform (this makes sure that the
+    # coord systems of all all images fit exactly, thus no need for
+    # reproject match)
+    new_orig = utils_dem_coreg.get_new_origin(
+        AOI_poly.bounds, PARAM.RESOLUTION_OUT)
 
     # %% ===== 1) read and preprocess files
     # preprocess raster files
@@ -84,68 +89,86 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
         np.stack([img_type, img_key, file_lst, file_n_lst]).T,
         columns=['pID', 'img_key', 'file_p', 'file_n']).groupby('pID').aggregate(list)
 
+    n_jobs = min(int(cpu_count()-10), len(img_key))
+
     logging.info(
         '==== read preproc ====:'
         + dt.datetime.now().strftime('%Y-%m-%d_%H:%M'))
-    n_jobs = min(int(cpu_count()-10), len(img_key))
     w1 = Parallel(n_jobs=n_jobs, verbose=0, backend='loky')(delayed(
         utils_dem_coreg.img_read_preproc)(
             *i,
             PARAM.RESOLUTION_OUT, AOI_coords,
             PARAM.EPSG_INP, PARAM.EPSG_OUT, band_names=PARAM.band_names,
-            bands_keep=PARAM.bands_keep)
+            bands_keep=PARAM.bands_keep, chunks=PARAM.dask_chunks,
+            new_origin=new_orig)
                 for i in zip(file_lst, img_key, nodata_inp))
 
     img_lst, img_key = zip(*w1)
-    #df_merged =
     gc.collect()
+
     logging.info(
         '==== filter outliers ====:'
         + dt.datetime.now().strftime('%Y-%m-%d_%H:%M'))
     img_dict = {x: y for x, y in zip(img_key, img_lst)}
-    img_dict['REF_DSM_0'] = utils_dem_coreg.filter_outliers(
-        img_dict['REF_DSM_0'], window_size=6, std_fact=3,
-        create_plot=False,
-        fp_fig=os.path.join(PARAM.PATH_IO,
-                            f'REF_DSM_outlier_fill.pdf'))
+    # get list index of file that should be filtered (DSM)
+    key_lst = [x for x in img_key if PARAM.filter_img_key in x]
+    w11 = Parallel(n_jobs=max(n_jobs - 1, 1), verbose=0, backend='loky')(delayed(
+        utils_dem_coreg.filter_outliers)(
+            img_dict[i_key], i_key,
+            min_filt=PARAM.filter_min, max_filt=PARAM.filter_max,
+            window_size=PARAM.filter_window_size_px,
+            std_fact=PARAM.filter_std_fact, create_plot=True,
+            fp_fig=os.path.join(PARAM.PATH_IO, f'{i_key}_outlier_filter.pdf'))
+            for i_key in key_lst)
 
-    logging.info(
-        '==== reproject ====:'
-        + dt.datetime.now().strftime('%Y-%m-%d_%H:%M'))
-    w2 = Parallel(n_jobs=max(n_jobs - 1, 1), verbose=0, backend='loky')(delayed(
-        utils_dem_coreg.reproject_match)(
-            i_img, img_lst[0], i_key, PARAM.RESAMPLING_TYPE)
-                for i_img, i_key in zip(img_lst[1:], img_key[1:]))
-
-    img_lst0, img_key0 = zip(*w2)
-    img_lst = [img_lst[0]] + list(img_lst0)
-    img_key = [img_key[0]] + list(img_key0)
+    img_lst11, img_key11 = zip(*w11)
+    img_dict.update({x: y for x, y in zip(img_key11, img_lst11)})
+    del w11
     gc.collect()
 
-    img_dict = {x: y for x, y in zip(img_key, img_lst)}
+    #logging.info(
+    #    '==== reproject ====:'
+    #    + dt.datetime.now().strftime('%Y-%m-%d_%H:%M'))
+    #w2 = Parallel(n_jobs=max(n_jobs - 1, 1), verbose=0, backend='loky')(delayed(
+    #    utils_dem_coreg.reproject_match)(
+    #        i_img, img_lst[0], i_key, PARAM.RESAMPLING_TYPE)
+    #            for i_img, i_key in zip(img_lst[1:], img_key[1:]))
+
+    #img_lst0, img_key0 = zip(*w2)
+    #img_dict.update({x: y for x, y in zip(img_key0, img_lst0)})
+    #del w2
+    #gc.collect()
+
+    #img_dict = {x: y for x, y in zip(img_key, img_lst)}
 
     logging.info(
         '==== merge ====:'
         + dt.datetime.now().strftime('%Y-%m-%d_%H:%M'))
-    if PARAM.merge_bands is None:
-        save_merged = True
-    else:
-        save_merged = False
+    #if PARAM.merge_bands is None:
+    #    save_merged = True
+    #else:
+    #    save_merged = False
     img_type_index = df_meta.index.tolist()
     img = {x: [img_dict[xx] for xx in df_meta.loc[x, 'img_key']]
            for x in img_type_index}
     w3 = Parallel(n_jobs=max(n_jobs - 1, 1), verbose=0, backend='loky')(delayed(
-        utils_dem_coreg.merge_save)(
-            img[i_ID], i_ID, PARAM.PATH_IO,
-            df_meta.loc[i_ID, 'file_n'][0].split('.')[0], save=save_merged)
+        utils_dem_coreg.merge_img)(
+            img[i_ID], i_ID
+            #PARAM.PATH_IO,
+            #df_meta.loc[i_ID, 'file_n'][0].split('.')[0], save=save_merged
+            )
                 for i_ID in img_type_index)
     img_m_lst, img_m_key, fp_merge = zip(*w3)
+    del w3
     gc.collect()
 
     if PARAM.merge_bands is None:
-        df_merged = pd.DataFrame(
-            np.stack([img_m_key, fp_merge]).T,
-            columns=['img_key', 'f_path']).set_index('img_key')
+        img_m_lst_out = img_m_lst
+        img_m_key_out = img_m_key
+        img_m_file_out = [
+            os.path.join(PARAM.PATH_IO,
+                         f"{df_meta.loc[i_key, 'file_n'][0].split('.')[0]}_preproc.tif")
+            for i_key in img_m_key]
     else:
         logging.info(
         '==== merge bands ====:'
@@ -155,33 +178,39 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
         img_m_file_out = []
         for i_key, i_lst in PARAM.merge_bands.items():
             img_m = [img_m_lst[img_m_key.index(x)] for x in i_lst]
-            img_m_lst_out.append(xarray.concat(img_m, dim='band'))
+            img_concat = xarray.concat(img_m, dim='band')
+            img_concat.attrs.update({'long_name':
+                                     list(img_concat.coords['band'].values)})
+            img_m_lst_out.append(img_concat)
             img_m_key_out.append(i_key)
             img_m_file_out.append(
                 os.path.join(PARAM.PATH_IO, f"{i_key}_preproc.tif"))
 
-        n_jobs = len(img_m_file_out)
-        Parallel(n_jobs=n_jobs, verbose=0)(delayed(
-            utils_dem_coreg.img_save)(*i) for i in zip(img_m_lst_out,
-                                                       img_m_file_out))
-        gc.collect()
-        df_merged = pd.DataFrame(
-            np.stack([img_m_key_out, img_m_file_out]).T,
-            columns=['img_key', 'f_path']).set_index('img_key')
+    df_merged = pd.DataFrame(
+        np.stack([img_m_key_out, img_m_file_out]).T,
+        columns=['img_key', 'f_path']).set_index('img_key')
 
     df_merged.to_csv(
         os.path.join(PARAM.PATH_IO,
                      f'{PARAM.PROJ_NAME}_preproc_files.txt'),
         sep='\t', header=True)
 
+    # --- save merged
+    logging.info(
+        '==== save merged ====:'
+        + dt.datetime.now().strftime('%Y-%m-%d_%H:%M'))
+    n_jobs = len(img_m_file_out)
+    Parallel(n_jobs=n_jobs, verbose=0, backend='loky')(delayed(
+        utils_dem_coreg.img_save)(i_img, i_file) for i_img, i_file in zip(
+            img_m_lst_out, img_m_file_out))
+
     # ---- create and save mask
     logging.info(
         '==== create mask ====:'
         + dt.datetime.now().strftime('%Y-%m-%d_%H:%M'))
     check_mask = xarray.concat(img_m_lst, dim='band')
-    mask_xdem = (~check_mask.isnull()).any(dim='band', keep_attrs=True)
-    mask_arosics = (~mask_xdem).astype(int)
-
+    mask_arosics = (check_mask.isnull()).any(
+        dim='band', keep_attrs=False).astype(int)
     mask_inv_save_path = os.path.join(PARAM.PATH_IO,
                                       'arosics_coregmask.tif')
     mask_arosics.rio.to_raster(mask_inv_save_path)
@@ -195,16 +224,15 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
 
     return
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Preprocess imagery for co-registration')
     parser.add_argument(
         '--PARAM_CLASS', type=str,
-        help=('name of Parameter class'), default="UAV_coreg_steps")
+        help=('name of Parameter class'), default="UAV_coreg_steps_no_merge")
     args = parser.parse_args()
     use_client = True
     if use_client:
-        cluster = LocalCluster(n_workers=12, threads_per_worker=1)
+        cluster = LocalCluster(n_workers=6, threads_per_worker=6)
         client = Client(cluster)
     main(**vars(args))

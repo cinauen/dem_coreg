@@ -35,11 +35,11 @@ import utils_arosics_coreg
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
-import control_file
+import control_file_templ
 
 
-def main(PARAM_CLASS="UAV_coreg_steps"):
-    PATH = control_file.get_proc_paths()
+def main(PARAM_CLASS="UAV_coreg_steps_no_merge"):
+    PATH = control_file_templ.get_proc_paths()
 
     # ------------ get param -----------
     PARAM = utils_dem_coreg.create_param_class_instance(
@@ -51,7 +51,8 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
     # === create log file and initialize errors to be written to console
     utils_dem_coreg.init_logging(
         log_file=os.path.join(PARAM.PATH_IO,
-        f'{PARAM.PROJ_NAME}_arosics_coreg_log_errors.log'))
+        f'{PARAM.PROJ_NAME}_arosics_coreg_log_errors.log'),
+        log_level=logging.DEBUG)
     logging.info(
         '==== Proc start ====:'
         + dt.datetime.now().strftime('%Y-%m-%d_%H:%M'))
@@ -74,7 +75,7 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
     # uses first file in target list to get correction parameters
     # then appplies forrection to all files in target list
 
-    logging.info('==== Start global coreg separate: '
+    logging.info('==== Start global coreg: '
                 + dt.datetime.now().strftime('%Y-%m-%d_%H%M'))
 
 
@@ -87,10 +88,10 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
         if 'REF' not in x['f_path'] else x['f_path'], axis=1)
 
     utils_arosics_coreg.do_global_coreg(
-        df_merged.loc['REF_RGB', 'f_path'],
-        df_merged.loc[['TAR_RGB', 'TAR_DSM'], 'f_path'].tolist(),
-        df_merged.loc[['TAR_RGB', 'TAR_DSM'], 'f_path_global_coreg'].tolist(),
-        coreg_mask=mask_inv_save_path,
+        df_merged.loc[PARAM.coreg_ref, 'f_path'],
+        df_merged.loc[PARAM.coreg_target, 'f_path'].tolist(),
+        df_merged.loc[PARAM.coreg_target, 'f_path_global_coreg'].tolist(),
+        coreg_mask=None,#mask_inv_save_path,
         CPU_num=PARAM.COREG_CPU_NUM,
         max_shift=PARAM.COREG_GLOBAL_MAX_SHIFT,
         window_size=(PARAM.COREG_GLOBAL_WINDOW_SIZE,
@@ -99,15 +100,15 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
         nodata=(np.nan, np.nan),  # nodata for target and reference
         resampling=PARAM.RESAMPLING_TYPE)
 
-    for i in df_merged.loc[['TAR_RGB', 'TAR_DSM'], 'f_path_global_coreg'].tolist():
-        utils_dem_coreg.resave_tif_to_cog(i)
+    for i in df_merged.loc[PARAM.coreg_target, 'f_path_global_coreg'].tolist():
+        utils_dem_coreg.resave_tif_to_cog(i, chunks=PARAM.dask_chunks)
 
 
     utils_arosics_coreg.apply_local_coreg(
-        df_merged.loc['REF_RGB', 'f_path'],
-        df_merged.loc[['TAR_RGB', 'TAR_DSM'], 'f_path_global_coreg'].tolist(),
-        df_merged.loc[['TAR_RGB', 'TAR_DSM'], 'f_path_local_coreg'].tolist(),
-        coreg_mask=mask_inv_save_path,
+        df_merged.loc[PARAM.coreg_ref, 'f_path'],
+        df_merged.loc[PARAM.coreg_target, 'f_path_global_coreg'].tolist(),
+        df_merged.loc[PARAM.coreg_target, 'f_path_local_coreg'].tolist(),
+        coreg_mask=None,#mask_inv_save_path,
         nodata=(np.nan, np.nan),  # nodata for target and reference
         grid_res_pix=PARAM.GRID_RES_PIX_LOCAL,
         max_shift=PARAM.COREG_LOCAL_MAX_SHIFT,
@@ -117,7 +118,7 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
         add_coreg_param_dict=PARAM.add_coreg_param_dict,
         resampling=PARAM.RESAMPLING_TYPE
         )
-    for i in df_merged.loc[['TAR_RGB', 'TAR_DSM'], 'f_path_local_coreg'].tolist():
+    for i in df_merged.loc[PARAM.coreg_target, 'f_path_local_coreg'].tolist():
         utils_dem_coreg.resave_tif_to_cog(i)
 
     df_merged.to_csv(
@@ -136,7 +137,7 @@ if __name__ == '__main__':
         description='Do horizontal co-registration based on mosaic')
     parser.add_argument(
         '--PARAM_CLASS', type=str,
-        help=('name of Parameter class'), default="UAV_coreg_steps")
+        help=('name of Parameter class'), default="UAV_coreg_steps_no_merge")
     args = parser.parse_args()
 
     main(**vars(args))

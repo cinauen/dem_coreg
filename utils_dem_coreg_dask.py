@@ -16,6 +16,7 @@ import osgeo
 from osgeo import osr
 from osgeo import ogr
 import geojson
+import affine
 
 import matplotlib.pyplot as plt
 
@@ -26,7 +27,7 @@ from dask import delayed
 from dask import compute
 
 
-def img_read(FILE_P, NODATA, EPSG_INP, chunks='auto'):
+def img_read(FILE_P, NODATA, EPSG_INP, chunks=None):
     """
     Read a raster image using rioxarray.
 
@@ -47,6 +48,8 @@ def img_read(FILE_P, NODATA, EPSG_INP, chunks='auto'):
     xarray.DataArray: The read raster image with nodata values set to
         NaN and CRS set if not already present.
     """
+    if chunks is None:
+        chunks = 'auto'
 
     img = rioxarray.open_rasterio(
         FILE_P, masked=False, chunks=chunks)
@@ -107,7 +110,8 @@ def img_preproc(img, res_out, AOI_coords, EPSG_TARGET, NODATA,
 @delayed
 def img_read_preproc(file_path, img_key, NODATA, res_out, AOI_coords, EPSG_INP,
                      EPSG_TARGET, band_names=None, bands_keep=None,
-                     resampling_type='bilinear', from_disk=True):
+                     resampling_type='bilinear', from_disk=True,
+                     chunks=None, new_origin=None):
     """
     Preprocesses an image by adjusting its resolution, clipping it to
     an Area of Interest (AOI), and padding it to match the AOI bounds.
@@ -129,27 +133,42 @@ def img_read_preproc(file_path, img_key, NODATA, res_out, AOI_coords, EPSG_INP,
         other options cubic nearest etc.)
     from_disk: !!! should be set forto False for more precise results
         but True is much faster
+    chunks: dict
+        chunks for dask is not chunking use None for auto chunking
+        use 'auto'. Otherwise, specify e.g. as
+        {'band': 4, 'x': 5120, 'y': 12400} (best to keep it as large
+        as possible but still fitting in memory)
+    new_origin: tuple
+        new origin fo projection (x_orig, y_orig)
 
     Returns:
     raster image: The preprocessed image.
     """
     # read file
-    img = img_read(file_path, NODATA, EPSG_INP)
+    img = img_read(file_path, NODATA, EPSG_INP, chunks=chunks)
 
     if band_names is not None:
-        img = img.assign_coords(band=band_names[img_key.split('_')[1]])
-        # add band names to attibutes
-        img.attrs.update({"long_name": band_names[img_key.split('_')[1]]})
+        img = img.assign_coords(
+            band=band_names['_'.join(img_key.split('_')[:2])])
 
     if bands_keep is not None:
-        img = img.sel(band=bands_keep[img_key.split('_')[1]])
+        img = img.sel(
+            band=bands_keep['_'.join(img_key.split('_')[:2])])
 
-    # adjust resolution and EPSG
-    if img.rio.resolution()[0] != res_out:
-        img = img.rio.reproject(
-                "EPSG:" + str(EPSG_TARGET), nodata=NODATA,
-                resampling=Resampling[resampling_type],
-                resolution=res_out)
+    # add band names to attibutes
+    img.attrs.update({"long_name": list(img.coords['band'].values)})
+
+    ## adjust resolution and EPSG
+    #if img.rio.resolution()[0] != res_out:
+    #    img = img.rio.reproject(
+    #            "EPSG:" + str(EPSG_TARGET), nodata=NODATA,
+    #            resampling=Resampling[resampling_type],
+    #            resolution=res_out)
+
+    # adjust resolution and EPSG and transform to same origin
+    img = img_transform(img, res_out, EPSG_TARGET,
+                        resampling_type=resampling_type,
+                        new_origin=new_origin)
 
     # clip to AOi
     img = clip_to_aoi(
@@ -161,6 +180,7 @@ def img_read_preproc(file_path, img_key, NODATA, res_out, AOI_coords, EPSG_INP,
 
     return img, img_key
 
+
 @delayed
 def reproject_match(img, ref_img, img_key, resampling_type):
     out = img.rio.reproject_match(
@@ -168,8 +188,9 @@ def reproject_match(img, ref_img, img_key, resampling_type):
             Resampling=Resampling[resampling_type])
     return out , img_key
 
+
 @delayed
-def merge_save(img_lst, img_key, path_out, file_prefix, save=False):
+def merge_img(img_lst, img_key):
     ''''''
     # ------- merge images
     if len(img_lst) > 1:
@@ -177,23 +198,14 @@ def merge_save(img_lst, img_key, path_out, file_prefix, save=False):
     else:
         img_merged = img_lst[0]
 
-    # ------- saved preprocessed image to file
-    if save:
-        fpath_out = os.path.join(
-            path_out, f"{file_prefix}_{img_key}_preproc.tif")
-        img_merged.rio.to_raster(
-            raster_path=fpath_out, write_nodata=True)
-    else:
-        fpath_out = None
+    return img_merged, img_key
 
-    return img_merged, img_key, fpath_out
 
-@delayed
+
 def img_save(img, file_p):
     ''''''
     # ------- saved preprocessed image to file
-    img.rio.to_raster(
-        raster_path=file_p, write_nodata=True)
+    img.rio.to_raster(raster_path=file_p)
 
     return
 
@@ -613,6 +625,8 @@ def init_logging(
     return
 
 
+
+
 def setup_time_control():
     """
     Set up time control for profiling.
@@ -686,7 +700,7 @@ def check_for_missing_fill_val(img):
     return img
 
 
-def resave_tif_to_cog(file_path, resave_rio=True):
+def resave_tif_to_cog(file_path, resave_rio=True, chunks='auto'):
     '''
     use resave_rio if want to resave the raster after coregistration
     such that all attributes are in the file (by default arosics
@@ -700,11 +714,10 @@ def resave_tif_to_cog(file_path, resave_rio=True):
 
     if resave_rio:
         img = rioxarray.open_rasterio(
-            file_path, masked=False, chunks='auto')  # masked=True
+            file_path, masked=False, chunks=chunks)  # masked=True
         img = check_for_missing_fill_val(img)
 
-        img.rio.to_raster(raster_path=file_path, write_nodata=True,
-                          driver="GTiff")
+        img.rio.to_raster(raster_path=file_path, driver="GTiff")
 
         img.close()
 
@@ -766,10 +779,12 @@ def pad_raster_to_multiple(src, blocksize):
 
     return padded_data, pad_width, pad_height
 
+
 @delayed
-def filter_outliers(img, img_key, window_size=600, std_fact=5,
-                    create_plot=False, fp_fig=None, min_filt=None,
-                    max_filt=None):
+def filter_outliers(img, img_key, min_filt=None, max_filt=None,
+                    moving_window_filter=False,
+                    window_size=600, std_fact=5,
+                    create_plot=False, fp_fig=None):
 
     # use median filter to create a smoothed image and pad nan values
     # at edges (use here mean as median is much slower)
@@ -783,7 +798,7 @@ def filter_outliers(img, img_key, window_size=600, std_fact=5,
     if max_filt is not None:
         img_cleaned = img_cleaned.where(img < max_filt)
 
-    if window_size is not None:
+    if moving_window_filter:
         # for faster computation with dask use construct creates a new dimension
         smoothed = img_cleaned.rolling(
             y=window_size, x=window_size, center=True).mean()
@@ -859,5 +874,107 @@ def create_comparison_plot(img_lst, title_lst, fp_fig=None,
                     format=fig_type)
 
     return
+
+
+def prepare_affine_transform(origin_x, origin_y, res_x, res_y):
+    '''
+    use this to prepare parameters for changing the grid origin
+    can then be used with reproject in transform_raster()
+
+    or can be used with reproject_match
+    '''
+
+    # Define the affine transformation matrix with the custom origin
+    transform = affine.Affine(
+        res_x,  # pixel width (X resolution)
+        0,                      # rotation (0 if north-up)
+        origin_x,                # top left corner X coordinate
+        0,                      # rotation (0 if north-up)
+        -res_y,  # pixel height (Y resolution, negative because Y decreases downwards)
+        origin_y                 # top left corner Y coordinate
+    )
+
+    return transform
+
+
+def get_new_origin(bounds_lbrt, res):
+    '''
+    origin is the upper left corner
+
+    bounds: is array with min x, min y, max x, max y (lbrt)
+        can come from img.rio.bounds() or poly.bounds (shapely)
+
+    min x, min y, max x, max y.
+    '''
+    return get_closest_interv(bounds_lbrt[0], res), get_closest_interv(bounds_lbrt[3], res)
+
+
+def get_closest_interv(x, res):
+    return round(x / res) * res
+
+
+def img_transform(img, res_out, epsg_out, resampling_type='bilinear',
+                  new_origin=None):
+    '''
+    origin_x, origin_y = get_new_origin(bounds_lbrt, res_out)
+
+    '''
+    # ----- adjust resolution projection
+    change_res = ((res_out is not None and res_out != 0)
+                    and (img.rio.resolution()[0] != res_out
+                    or img.rio.resolution()[1] != res_out))
+
+    if new_origin is not None:
+        affine_trans = prepare_affine_transform(
+            *new_origin, res_out, res_out)
+    else:
+        affine_trans = None
+
+    if img.rio.crs.to_epsg() != epsg_out or change_res:
+        if change_res:
+            res_target = res_out
+        else:
+            res_target = None
+        img = transform_raster(
+            img, epsg_out, nodata_out=img.rio.nodata,
+            resampling_type=resampling_type, res=res_target,
+            transform_inp=affine_trans)
+
+    return img
+
+
+def transform_raster(img, EPSG_TARGET, nodata_out=None,
+                     resampling_type='bilinear', res=None,
+                     transform_inp=None):
+    '''
+    default rsampling is bilinear
+    other options are cubic or nearest (fastest)
+    !!! for integer values, use nearest !!!
+
+    to create transform_inp use: prepare_affine_transform() this
+    can be used to change grid origin
+
+    '''
+    if nodata_out is None:
+        nodata_out = img.rio.nodata
+    if (img.rio.crs.to_epsg() != EPSG_TARGET or res is not None
+        or transform_inp is not None):
+        if nodata_out is None:
+           nodata_out = img.rio.nodata
+
+        img = img.rio.reproject(  # reproject
+            "EPSG:" + str(EPSG_TARGET), nodata=nodata_out,
+            resampling=Resampling[resampling_type], resolution=res)
+
+        if transform_inp is not None:
+            img = img.rio.reproject(  # reproject
+                "EPSG:" + str(EPSG_TARGET), nodata=nodata_out,
+                resampling=Resampling[resampling_type],
+                transform=transform_inp)
+
+        if nodata_out is not None:
+            img.rio.write_nodata(nodata_out, inplace=True)
+
+    return img
 
 

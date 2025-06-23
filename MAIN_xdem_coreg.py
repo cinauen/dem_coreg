@@ -40,10 +40,10 @@ import utils_dem_coreg
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
-import control_file
+import control_file_templ
 
-def main(PARAM_CLASS="UAV_coreg_steps"):
-    PATH = control_file.get_proc_paths()
+def main(PARAM_CLASS="UAV_coreg_steps_no_merge"):
+    PATH = control_file_templ.get_proc_paths()
 
     # ------------ get param -----------
     PARAM = utils_dem_coreg.create_param_class_instance(
@@ -81,14 +81,17 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
     #  https://xdem.readthedocs.io/en/stable/basic_examples/plot_nuth_kaab.html#sphx-glr-basic-examples-plot-nuth-kaab-py
 
     # ------ read preprocessed images from files into xdem format
-    reference_dem = xdem.DEM(
-        df_merged.loc['REF_DSM', 'f_path_local_coreg'])
-    target_dem = xdem.DEM(
-        df_merged.loc['TAR_DSM', 'f_path_local_coreg'])
+    ref_fname_inp = df_merged.loc['REF_DSM', 'f_path']
+    target_fname_inp = df_merged.loc['TAR_DSM', 'f_path_local_coreg']
+    reference_dem = xdem.DEM(ref_fname_inp)
+    target_dem = xdem.DEM(target_fname_inp)
 
     # ---- add vertical refernce ssystem
     reference_dem.set_vcrs("Ellipsoid")
     target_dem.set_vcrs("Ellipsoid")
+
+    # make sure that rasters have same grid and crs
+    target_dem = target_dem.reproject(reference_dem)
 
 
     # ------ initlaize figure (figure with 3 subplots in one row)
@@ -98,7 +101,7 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
     # ------- plot difference between DEMs before coregistration
     diff_before = reference_dem - target_dem
     diff_before.plot(cmap="RdYlBu", vmin=-5, vmax=5,
-                    cbar_title="Elevation change (m)", ax=ax[0])
+                     cbar_title="Elevation change (m)", ax=ax[0])
     ax[0].set_title('uncorrected')
 
     # -------- nuth kaab co-registration -----
@@ -130,18 +133,17 @@ def main(PARAM_CLASS="UAV_coreg_steps"):
     # %% ======== 8) save outputs
     # ---- save figure with elevation differences
     path_out = os.path.join(
-        PATH.PATH_IO,
+        PARAM.PATH_IO,
         f"{PARAM.TARGET_FNAME_LST[0].split('.')[0]}_coregister_figure.pdf")
     fig.savefig(path_out, format='pdf')
 
     # ---- save coregistered DEMs
     path_out = os.path.join(
-        PATH.PATH_IO,
-        f"{PARAM.TARGET_FNAME_LST[0].split('.')[0]}_coregister_NuthKaab.tif")
+        f"{PARAM.TARGET_FNAME[0].split('.')[0]}_coregister_NuthKaab.tif")
     aligned_dem1.save(path_out, nodata=np.nan)
 
     path_out = os.path.join(
-        PATH.PATH_IO,
+        PARAM.PATH_IO,
         f"{PARAM.TARGET_FNAME_LST[0].split('.')[0]}_coregister_ICP_NuthKaab.tif")
     aligned_dem2.save(path_out, nodata=np.nan)
 
@@ -164,7 +166,7 @@ if __name__ == '__main__':
         description='Do horizontal 3d co-registration based on DSM')
     parser.add_argument(
         '--PARAM_CLASS', type=str,
-        help=('name of Parameter class'), default="UAV_coreg_steps")
+        help=('name of Parameter class'), default="UAV_coreg_steps_no_merge")
     args = parser.parse_args()
 
     main(**vars(args))
