@@ -5,19 +5,9 @@ Coregister a DEM to a reference DEM (using xdem)
 inputs are raster files (.tif)
 
 Steps:
-1) read files (reference: file to which the dem should be coregistered to,
-               target: the file which has to be coregistered)
-2) preprocess files: clip to same extent and reproject to same
-               resolution (min resolution) and merge subfiles if required
-3) save pre-processed files
-4) read files into xdem format
-5) get difference between the initial dems
-6) run co-registration with two different pipelines
-7) get difference per pipeline and create plot
-8) save coregistered image
+run xdem oreg
 
 run with
-
 nohup python ./MAIN_xdem_coreg.py &>./xdem_coreg.log &
 '''
 
