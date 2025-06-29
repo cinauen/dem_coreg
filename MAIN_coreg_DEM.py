@@ -30,7 +30,7 @@ from rasterio.enums import Resampling
 import matplotlib.pyplot as plt
 
 import param_coreg
-import utils_dem_coreg
+import additional_versions.utils_dem_coreg as utils_dem_coreg
 
 # get path to current directory to load modules
 sys.path.insert(0, os.path.abspath(
